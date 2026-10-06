@@ -4097,6 +4097,7 @@ def _run_supplemental_searches(
             failures: list[str] = []
             items = bird_x.search_handles(
                 hs, topic, from_date, count_per=count, failure_out=failures,
+                to_date=to_date,
             )
             return items, _record_handle_lane_failures("FROM", failures)
 
@@ -4104,6 +4105,7 @@ def _run_supplemental_searches(
             failures: list[str] = []
             items = bird_x.search_mentions(
                 hs, from_date, count_per=count, failure_out=failures,
+                to_date=to_date,
             )
             return items, _record_handle_lane_failures("ABOUT", failures)
     elif primary == "xapi":

@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from . import env, health, http, log, subproc
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from .relevance import token_overlap_relevance as _compute_relevance
@@ -188,7 +188,22 @@ def _plain_query_tokens(text: str) -> list[str]:
 _GROUPING_CHARS = "“”()[]{}"
 
 
-def build_topic_query(topic: str, from_date: str) -> str:
+def _date_filters(from_date: str, to_date: Optional[str] = None) -> str:
+    filters = f"since:{from_date}"
+    if to_date is not None:
+        end = date.fromisoformat(to_date)
+        if end == date.max:
+            # No supported post date lies beyond this inclusive upper bound.
+            return filters
+        # The research window includes to_date; X's until bound is exclusive.
+        until = end + timedelta(days=1)
+        filters += f" until:{until.isoformat()}"
+    return filters
+
+
+def build_topic_query(
+    topic: str, from_date: str, to_date: Optional[str] = None
+) -> str:
     """Build the X topic query, preserving quoted proper-noun phrases.
 
     Previously the topic went through ``_plain_query_tokens``, which stripped
@@ -211,7 +226,7 @@ def build_topic_query(topic: str, from_date: str) -> str:
         if (clean := token.strip("'‘’"))
     ]
     core = " ".join(tokens).strip()
-    return f"{core} since:{from_date}" if core else f"since:{from_date}"
+    return " ".join(part for part in (core, _date_filters(from_date, to_date)) if part)
 
 
 def is_bird_installed() -> bool:
@@ -454,7 +469,7 @@ def search_x(
     Args:
         topic: Search topic
         from_date: Start date (YYYY-MM-DD)
-        to_date: End date (YYYY-MM-DD) - unused but kept for API compatibility
+        to_date: Inclusive end date (YYYY-MM-DD)
         depth: Research depth - "quick", "default", or "deep"
 
     Returns:
@@ -467,7 +482,8 @@ def search_x(
     core_subject = _extract_core_subject(topic)
     core_words = _plain_query_tokens(core_subject)
     core_topic = " ".join(core_words)
-    query = build_topic_query(core_subject, from_date)
+    query = build_topic_query(core_subject, from_date, to_date)
+    date_filters = _date_filters(from_date, to_date)
 
     _log(f"Searching: {query}")
     response = _run_bird_search(query, count, timeout)
@@ -484,7 +500,7 @@ def search_x(
             # Build OR-group query: ("multi-agent" OR "agent simulation") since:DATE
             or_parts = ' OR '.join(f'"{t}"' for t in compounds[:3])
             _log(f"0 results for '{core_topic}', retrying with OR groups: {or_parts}")
-            query = f"({or_parts}) since:{from_date}"
+            query = f"({or_parts}) {date_filters}"
             response = _run_bird_search(query, count, timeout)
             if not response.get("error"):
                 last_clean_response = response
@@ -494,7 +510,7 @@ def search_x(
     if not items and len(core_words) > 2:
         shorter = ' '.join(core_words[:2])
         _log(f"0 results for '{core_topic}', retrying with '{shorter}'")
-        query = f"{shorter} since:{from_date}"
+        query = f"{shorter} {date_filters}"
         response = _run_bird_search(query, count, timeout)
         if not response.get("error"):
             last_clean_response = response
@@ -519,7 +535,7 @@ def search_x(
             strongest = max(candidates, key=len)
             retry_terms = anchor if strongest == anchor else f"{anchor} {strongest}"
             _log(f"0 results for '{core_topic}', retrying anchored on '{retry_terms}'")
-            query = f"{retry_terms} since:{from_date}"
+            query = f"{retry_terms} {date_filters}"
             response = _run_bird_search(query, count, timeout)
             if not response.get("error"):
                 last_clean_response = response
@@ -536,6 +552,8 @@ def search_handles(
     from_date: str,
     count_per: int = 5,
     failure_out: Optional[List[str]] = None,
+    *,
+    to_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Search specific X handles for topic-related content.
 
@@ -553,11 +571,13 @@ def search_handles(
         failure_out: When provided, a short reason is appended for every
             per-handle failure branch, so the caller can distinguish a
             transport failure from a handle that genuinely posted nothing.
+        to_date: Inclusive end date (YYYY-MM-DD), when supplied
 
     Returns:
         List of raw item dicts (same format as parse_bird_response output).
     """
     core_topic = _extract_core_subject(topic) if topic else None
+    date_filters = _date_filters(from_date, to_date)
 
     def _note(msg: str) -> None:
         if failure_out is not None:
@@ -566,7 +586,7 @@ def search_handles(
     def _search_one_handle(handle: str) -> List[Dict[str, Any]]:
         handle = handle.lstrip("@")
         # Always unfiltered: pull the timeline, rank by topic relevance below.
-        query = f"from:{handle} since:{from_date}"
+        query = f"from:{handle} {date_filters}"
 
         cmd = [
             "node", str(_BIRD_SEARCH_MJS),
@@ -629,6 +649,8 @@ def search_mentions(
     from_date: str,
     count_per: int = 5,
     failure_out: Optional[List[str]] = None,
+    *,
+    to_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Search for tweets ABOUT/TO each handle — the mention lane.
 
@@ -644,17 +666,20 @@ def search_mentions(
         failure_out: When provided, a short reason is appended for every
             per-handle failure branch, so the caller can distinguish a
             transport failure from a handle nobody mentioned.
+        to_date: Inclusive end date (YYYY-MM-DD), when supplied
 
     Returns:
         List of raw item dicts (same format as parse_bird_response output).
     """
+    date_filters = _date_filters(from_date, to_date)
+
     def _note(msg: str) -> None:
         if failure_out is not None:
             failure_out.append(msg)
 
     def _search_one(handle: str) -> List[Dict[str, Any]]:
         handle = handle.lstrip("@")
-        query = f"@{handle} since:{from_date}"
+        query = f"@{handle} {date_filters}"
         cmd = [
             "node", str(_BIRD_SEARCH_MJS),
             query,
