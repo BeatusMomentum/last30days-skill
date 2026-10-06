@@ -160,7 +160,7 @@ These LAWs resolve presentation conflicts within this file, subject to the instr
 
 **Observed LAW 4 violation (2026-04-18, Peter Steinberger disaster #2):** the model emitted `Headline`, `What he is actually saying`, `Cross-source corroboration`, `Where evidence is thin`, `Bottom line` on a GENERAL query. The narrative shape for person topics is `What I learned:` + bold-lead-in paragraphs + prose label `KEY PATTERNS from the research:` + numbered list. No blog-post subheadings.
 
-**LAW 5 - ENGINE FOOTER PASS-THROUGH. EVERY QUERY TYPE. EVERY RUN.** The engine output ends with a `✅ All agents reported back!` emoji-tree footer bounded by `---` lines and wrapped in `<!-- PASS-THROUGH FOOTER -->` / `<!-- END PASS-THROUGH FOOTER -->` comments (v3.0.10+). Include that block verbatim where compatible with higher-priority host/tool requirements and user instructions, positioned after KEY PATTERNS (and after the comparison-table scaffold if present) and before the invitation. Do not recompute the stats, reformat the tree, paraphrase, skip it, or fabricate your own `## Notable Stats` replacement unless governing instructions require an adjustment. Include any required citations separately.
+**LAW 5 - ENGINE FOOTER PASS-THROUGH. EVERY QUERY TYPE. EVERY RUN.** When the engine emits a `✅ All agents reported back!` emoji-tree footer bounded by `---` lines and wrapped in `<!-- PASS-THROUGH FOOTER -->` / `<!-- END PASS-THROUGH FOOTER -->` comments, relay that block after KEY PATTERNS (and after the comparison-table scaffold if present) and before the invitation, subject to higher-priority instructions. Preserve the emitted statistics and lines unless governing host/tool requirements or user instructions require an adjustment. Include any required citations separately. The saved-file pointer is optional: relay it only when emitted, even if saving is enabled. If no footer or saved-file pointer was emitted, do not invent one or fabricate a `## Notable Stats` replacement.
 
 **LAW 6 - NO RAW RANKED EVIDENCE CLUSTERS IN BODY.** The engine's `## Ranked Evidence Clusters`, `## Stats`, and `## Source Coverage` blocks are bounded inside `<!-- EVIDENCE FOR SYNTHESIS -->` / `<!-- END EVIDENCE FOR SYNTHESIS -->` comments in the `--emit compact` / `--emit md` stdout. They are raw evidence for YOU to read, not output to emit. Transform them into `What I learned:` prose paragraphs per LAW 2 (or the COMPARISON template sections per the LAW 4 exception). If your response contains the literal string `### 1.` followed by a score tuple like `(score N, M items, sources: ...)`, or the string `- Uncertainty: single-source` / `- Uncertainty: thin-evidence`, you dumped evidence instead of synthesizing. STOP and regenerate.
 
@@ -247,10 +247,12 @@ End of OUTPUT CONTRACT. The laws above are the contract; everything below is imp
 
 # HOW TO INVOKE THIS SKILL (READ FIRST, FOLLOW EVERY TIME)
 
+**Save-directory resolution:** The commands below query the engine's trusted configuration before selecting a directory. Never source a `.env` file in the shell. If the user supplies a one-off save directory, add `--save-dir="<requested directory>"` to the `--resolve-save-dir` command and remove duplicate save-directory flags from the research arguments. Preserve an empty result: it disables research file saves and the saved-file appendix. Resolve once per research/discovery run; carry the exact resulting value into every later command. If shell tool calls do not share variables, explicitly restore that captured value (including an empty string) in each later call instead of resolving configuration again.
+
 **LIBRARY SEARCH FAST PATH — this overrides every research/setup step below.** If the user says “search my library for X”, “have I researched X before?”, or otherwise asks to query prior saved research, do not run WebSearch, setup, preflight, or fresh source research. Run:
 
 ```bash
-LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+LAST30DAYS_MEMORY_DIR="$("${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --resolve-save-dir)" || exit
 "${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" library search "${LIBRARY_QUERY}" --save-dir="${LAST30DAYS_MEMORY_DIR}"
 ```
 
@@ -259,7 +261,7 @@ Relay the dated, topic-grouped matches. This is deterministic offline FTS over t
 **LIBRARY FEED FAST PATH — this overrides every research/setup step below.** If the user asks to build, view, refresh, or subscribe to their saved research library/feed, do not run host WebSearch resolution, the first-run setup gate, topic preflight, or source research. Run:
 
 ```bash
-LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+LAST30DAYS_MEMORY_DIR="$("${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --resolve-save-dir)" || exit
 "${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" library feed --save-dir="${LAST30DAYS_MEMORY_DIR}"
 ```
 
@@ -268,14 +270,14 @@ Relay the generated local `index.html` and `feed.xml` paths. If the user explici
 **TOPIC QUEUE FAST PATH — this overrides every research/setup step below.** If the user asks "what's in my topic queue", "what should I talk about next", "what topics haven't I covered", "show my content pipeline", "mark <topic> as covered", "I covered X on the podcast", "we published that article", or similar — even cold, with no research run earlier in this session — do not run WebSearch, setup, preflight, or fresh source research. Run the read form:
 
 ```bash
-LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+LAST30DAYS_MEMORY_DIR="$("${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --resolve-save-dir)" || exit
 "${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" queue list --save-dir="${LAST30DAYS_MEMORY_DIR}"
 ```
 
 or the cover form, for "mark X as covered" phrasing:
 
 ```bash
-LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+LAST30DAYS_MEMORY_DIR="$("${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --resolve-save-dir)" || exit
 "${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" queue cover "<topic name>" --save-dir="${LAST30DAYS_MEMORY_DIR}"
 ```
 
@@ -325,8 +327,9 @@ Branching rule:
   **Leg 1 - nominate (Bash timeout 180000).** Sweep the listings and write the nominations bundle:
 
 ```bash
-LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+LAST30DAYS_MEMORY_DIR="$("${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --resolve-save-dir)" || exit
 # Global trending: --discover with NO domain. Domain trending: --discover "${DISCOVERY_DOMAIN}".
+printf 'Resolved save directory: <%s>\n' "$LAST30DAYS_MEMORY_DIR" >&2
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --discover --nominate-only --save-dir="${LAST30DAYS_MEMORY_DIR}"
 ```
 
@@ -354,7 +357,7 @@ LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
   **Leg 2 - research (Bash timeout 600000).** Write the judgments file and run the resume leg in the SAME Bash call, using the established tmpfile pattern (mktemp XXXXXX + trap + `cat >|` + quoted heredoc - same rules as the Step 0.75 plan tmpfile; run the block directly in your shell tool, NEVER wrapped in `bash -lc '...'`):
 
 ```bash
-LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+: "${LAST30DAYS_MEMORY_DIR?Restore the exact save directory captured in discovery leg 1}"
 # Trailing XXXXXX (no .json suffix) for BSD/macOS mktemp; >| because mktemp
 # already created the file (a plain > is refused under `set -o noclobber`).
 JUDGMENTS_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-judgments.XXXXXX")
@@ -387,7 +390,7 @@ JUDGE_EOF
   **Leg 3 - finalize (Bash timeout 60000).** Second tmpfile (sentinel `ANGLE_EOF`), same pattern, same Bash call as the finalize command:
 
 ```bash
-LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+: "${LAST30DAYS_MEMORY_DIR?Restore the exact save directory captured in discovery leg 1}"
 ANGLES_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-angles.XXXXXX")
 trap 'rm -f "$ANGLES_FILE"' EXIT
 cat >| "$ANGLES_FILE" <<'ANGLE_EOF'
@@ -399,7 +402,7 @@ ANGLE_EOF
   It applies your angles, renders the final topic-per-section brief, saves artifacts, and records the topic queue - offline, no network. **Relay its stdout verbatim** per the DISCOVERY bullet in the OUTPUT CONTRACT - including a **"Nothing solid this window"** result, which is a valid, honest outcome (the confidence floor found no topic with enough cross-source confirmation or engagement; do NOT retry, work around it, or fabricate topics - relay it and suggest a narrower domain or a direct topic run).
 
   **Protocol rules:**
-  - ONE identical `--save-dir="${LAST30DAYS_MEMORY_DIR}"` threaded through all three commands. The handoff files (`discover-nominations.json`, `discover-pending.json`) live in that directory; a different or missing save dir on a later leg means the leg cannot find them.
+  - ONE identical `--save-dir="${LAST30DAYS_MEMORY_DIR}"` threaded through all three commands. Capture the resolved value in leg 1 and restore it unchanged for legs 2 and 3, even if configuration or working directory changes. The handoff files (`discover-nominations.json`, `discover-pending.json`) live in that directory; a different save dir on a later leg means the leg cannot find them. When saving is explicitly disabled with an empty value, all legs use the engine's config-directory handoff location; do not substitute the default memory directory.
   - Handoff files expire after one hour (TTL 3600s) - judge and finalize promptly, in the same session as the sweep.
   - Contract failures (missing/stale bundle or pending report, judgments/angles not bound to the current `bundle_id`, malformed file) exit 2 with the remedy named on stderr. Fix exactly what it names and re-run THAT leg.
   - **Degradation rule:** if any leg fails twice (exit 2, invalid file, timeout), fall back to the one-shot `"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --discover [domain] --emit=compact --save-dir="${LAST30DAYS_MEMORY_DIR}"` (Bash timeout 600000) and relay its brief - never leave the user with no output. Its one-shot heuristics note is expected on this path.
@@ -501,7 +504,8 @@ fi
   exit 1
 }
 
-LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+LAST30DAYS_MEMORY_DIR="$("${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --resolve-save-dir)" || exit
+printf 'Resolved save directory: <%s>\n' "$LAST30DAYS_MEMORY_DIR" >&2
 ```
 
 **PYTHON VERSION GATE — when the Runtime Preflight Bash block above exits with a Python version error:**
@@ -529,7 +533,7 @@ Your host search is better than the engine's keyless web fallback, so this tells
 
 ## Configuration
 
-Set `LAST30DAYS_MEMORY_DIR` before invoking the skill to choose where raw research files are saved. If it is not set, the skill defaults to `~/Documents/Last30Days`. The engine creates this directory on first save.
+Set `LAST30DAYS_MEMORY_DIR` in the process environment, trusted project config, or global `~/.config/last30days/.env` to choose where raw research files are saved. Resolution follows that order after an explicit `--save-dir`. Only an absent setting defaults the skill to `~/Documents/Last30Days`; an explicitly empty value disables research file saves. The engine creates a nonempty directory on first save.
 
 The engine reads `LAST30DAYS_MEMORY_DIR` from either the process env or `~/.config/last30days/.env`, so direct CLI invocations (`python3 scripts/last30days.py ...`) without `--save-dir` will still save when the env var is set. Mirrors the `LAST30DAYS_STORE` env-or-flag convention. Explicit `--save-dir` always wins.
 
@@ -1161,7 +1165,7 @@ If `--agent` appears in ARGUMENTS (e.g., `/last30days plaud granola --agent`):
 5. **Skip** the follow-up invitation ("I'm now an expert on X...")
 6. **Output** the complete research report and stop - do not wait for further input
 
-Agent mode saves raw research data to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`) automatically via `--save-dir` (handled by the script, no extra tool calls). Use `--output <file>` only when a caller needs the rendered stdout artifact at an exact path, with the format controlled by `--emit`.
+When the resolved directory is nonempty, agent mode saves raw research data to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`) automatically via `--save-dir` (handled by the script, no extra tool calls). An empty directory disables these saves and their footer pointer. Use `--output <file>` only when a caller needs the rendered stdout artifact at an exact path, with the format controlled by `--emit`.
 
 **Machine-readable JSON exception:** If the user explicitly asks for structured JSON for an agent, script, or workflow, replace the normal `--emit=compact` engine invocation with `--emit=json` and pass the engine's stdout through verbatim instead of synthesizing the report format below. The default `--json-profile=agent` is the stable, versioned flat contract; use `--json-profile=raw` only when the user explicitly requests the full internal `Report` dump. `--preflight --emit=json` is a separate permission-preflight contract and is not affected by `--json-profile`. Full field documentation and the versioning policy live in `docs/reference/json-export.md` in the repository.
 
@@ -1732,6 +1736,8 @@ For ALL query types:
 
 **MANDATORY - do not skip this step.** Every post-engine WebSearch supplement you ran in Step 2 MUST be appended to the saved raw file under `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`). Skipping this step is a common Opus 4.7 failure mode: the saved file ends at `## Source Coverage` with no appendix, future sessions cannot see what blog/tutorial/news sources informed the synthesis, and the user cannot trace where specific claims came from.
 
+If the resolved `LAST30DAYS_MEMORY_DIR` is empty, saving was disabled: skip this appendix step and do not create a file elsewhere.
+
 **LAW 1 citation check (read before synthesizing):** the `## WebSearch Supplemental Results` appendix preserves research for later sessions. It does not replace visible citations required by higher-priority host/tool requirements or user instructions. Include those citations in the response. Otherwise keep the default footer and invitation without an extra source list.
 
 **Self-check (coverage, not strict equality):** The `## WebSearch Supplemental Results` section must cover every web source that informed your synthesis - including pre-research searches whose findings you cited, not only the Step 2 supplements. So the bullet count should be at least the number of post-engine WebSearches you ran, and may exceed it when pre-research web context fed the synthesis (common on `--hiring-signals` runs, where the careers/funding context comes from pre-research). If a source shaped a claim, it gets a bullet. If you ran zero supplements (which plan 005 says is almost never correct), skip this step entirely rather than writing an empty section.
@@ -2024,8 +2030,7 @@ Voice contract LAWs 1, 3, 5 apply to comparisons unchanged (omit unnecessary tra
 ✅ All agents reported back!
 ├─ 🟠 Reddit: ...
 ├─ 🔵 X: ...
-(engine footer passed through verbatim, LAW 5)
-└─ 📎 Raw results saved to ...
+(engine footer passed through when emitted, LAW 5; include its saved-file pointer only if emitted)
 
 I've compared {TOPIC_A} vs {TOPIC_B} [vs ...] using the latest community data. Some things you could ask:
 - [follow-up referencing comparison specifics, e.g. "Deep dive into {Entity} alone with /last30days {Entity}"]
@@ -2158,7 +2163,7 @@ If the research output contains a `**🔍 Research Coverage:**` block, render it
 
 **THEN - Engine footer pass-through (right before invitation):**
 
-**The research output ENDS with a deterministic footer block bracketed by `---` lines, starting with `✅ All agents reported back!` and ending with `📎 Raw results saved to {resolved LAST30DAYS_MEMORY_DIR}/<slug>-raw.md`. Include that footer block verbatim where compatible with higher-priority host/tool requirements and user instructions, positioned after your "What I learned" + "KEY PATTERNS" narrative and before the invitation. Do not recompute the stats. Do not reformat the tree. Do not paraphrase. Do not add your own source lines inside the copied footer. Required citations may appear separately.**
+**When the research output contains a deterministic footer block bracketed by `---` lines and starting with `✅ All agents reported back!`, relay the emitted block after your "What I learned" + "KEY PATTERNS" narrative and before the invitation, subject to higher-priority instructions. Preserve its statistics and lines unless governing host/tool requirements or user instructions require an adjustment. Do not add your own source lines inside the copied footer. Required citations may appear separately. Include `📎 Raw results saved to ...` only when the engine emitted a saved path. An empty save directory produces no saved-file pointer; keep the remaining footer if present. Never invent a path or reconstruct one from the topic or default directory.**
 
 - The engine already omits zero-count sources. You do not need to filter them.
 - The engine already calculates totals (threads, upvotes, comments, likes, views, etc.). You do not need to add them up.
@@ -2166,15 +2171,15 @@ If the research output contains a `**🔍 Research Coverage:**` block, render it
 - The engine already formats Polymarket odds as real `%` strings. You do not need to parse them.
 - The engine already picks top voices (handles + subreddits). You do not need to pick them.
 
-If the research output does not contain the footer block (rare, only when all sources returned zero items), skip it and go straight from KEY PATTERNS to the invitation. If the block is present, preserve it verbatim where compatible with governing instructions.
+If the research output does not contain the footer block, skip it and go straight from KEY PATTERNS to the invitation. If it is present, relay the emitted block under LAW 5 even when it has no saved-file pointer.
 
 **Citation requirements before the invitation:** include visible citations required by higher-priority host/tool requirements or user instructions. Keep the engine footer where compatible with those requirements. The default response ends at the invitation without an additional source list; required trailing citations are an exception.
 
-**SELF-CHECK before displaying**: Re-read your "What I learned" section. Does it match what the research ACTUALLY says? If you catch yourself projecting your own knowledge instead of the research, rewrite it. Then verify: (a) no `##` headers in your response body, (b) no em-dashes or en-dashes anywhere, (c) the engine footer block appears verbatim between KEY PATTERNS and the invitation.
+**SELF-CHECK before displaying**: Re-read your "What I learned" section. Does it match what the research ACTUALLY says? If you catch yourself projecting your own knowledge instead of the research, rewrite it. Then verify: (a) no `##` headers in your response body, (b) no em-dashes or en-dashes anywhere, (c) any emitted engine footer appears between KEY PATTERNS and the invitation under LAW 5, with no added saved-file pointer.
 
 **Saved artifact access flow:** after the engine has created a file, decide how the user should get access to it based on what they asked for:
 
-- **Normal report:** the Markdown raw artifact already appears in the engine footer (`📎 Raw results saved to ...`). The chat synthesis is the primary user-facing report, so do not open the raw Markdown file automatically and do not ask a follow-up access question. The path line is enough.
+- **Normal report:** if the engine emitted a saved Markdown path, relay that footer pointer (`📎 Raw results saved to ...`). Otherwise, claim no saved artifact. The chat synthesis is the primary user-facing report, so do not open the raw Markdown file automatically and do not ask a follow-up access question. An emitted path line is enough.
 - **Markdown file requested:** if the user explicitly asked for a Markdown file/export, treat the saved Markdown path as the deliverable. Provide the path and open it locally when the host can safely open local files and the request implies viewing it now. Do not offer hosted publishing for Markdown.
 - **HTML file requested:** follow `references/save-html-brief.md`. Save the local HTML first, show the absolute path, then present explicit next-step choices: open the HTML file, publish to an available/preferred HTML publishing service, or done for now.
 - **Share/publish requested:** sharing means hosted HTML, not Markdown. Save the local HTML first and show the path. Then respect existing publishing preferences, show available publishing choices, and ask for public-vs-password only when the selected service requires that choice (for `ht-ml.app`, ask whether password protection should be used; if yes, ask the user to type the shared password before publishing). Never block creation of the local file on the hosting decision.
@@ -2291,7 +2296,7 @@ Close with `I have all the links to the {N} {source list} I pulled from. Just as
 
 ## WAIT FOR USER'S RESPONSE
 
-**STOP and wait** for the user to respond after completing the response and any citations required by higher-priority host/tool requirements or user instructions. Do not continue research after the invitation unless governing instructions require it. Omit an extra source list only when none is required. The research script already saved raw data to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`) via `--save-dir`.
+**STOP and wait** for the user to respond after completing the response and any citations required by higher-priority host/tool requirements or user instructions. Do not continue research after the invitation unless governing instructions require it. Omit an extra source list only when none is required. Claim that raw data was saved only when the engine emitted a saved path; an empty `LAST30DAYS_MEMORY_DIR` disables saving and its footer pointer.
 
 ---
 
