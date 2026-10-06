@@ -105,6 +105,7 @@ These variables configure the local Go MCP server and are read from its process 
 |---|---|---|---|
 | `LAST30DAYS_PYTHON` | unset | An executable name or path | Selects the Python 3.12+ interpreter used by the MCP server. A caller-supplied `RunOptions.PythonPath` remains the test/caller override; otherwise this variable must resolve to an executable. When it is unset, the server looks up `python3` on `PATH`. An empty or unresolvable value is an error rather than a fallback. |
 | `LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES` | unset (deny) | `1`, `true`, `yes`, or `on`, case-insensitive | A recognized truthy value removes the MCP layer's default `--no-browser-cookies` flag. Every other value keeps that denial. This switch grants no consent by itself: browser-cookie access still requires the engine's separately recorded consent and `FROM_BROWSER` configuration. |
+| `LAST30DAYS_MCP_TIMEOUT` | `600` seconds (10 minutes) | A positive Go duration such as `10m`, `90s`, or `1m30s`, or a positive integer number of seconds such as `600` | Caps each research subprocess. The default accommodates deep discovery enrichment. Invalid, zero, and negative values use the default. An explicit caller timeout takes precedence. Source and enrichment deadlines can finish earlier; increasing this cap also extends how long a hung subprocess can occupy an MCP slot. |
 
 ## API keys (`.env`)
 
