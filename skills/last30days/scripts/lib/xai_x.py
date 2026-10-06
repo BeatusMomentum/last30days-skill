@@ -5,7 +5,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional
 
-from . import http, log
+from . import http, log, providers
 
 
 def _safe_text(val) -> str:
@@ -132,13 +132,16 @@ def search_x(
         ],
     }
 
+    # Honor XAI_BASE_URL like the planner/rerank client does (providers.py), so
+    # an override redirects every request that carries the xAI key, not only some.
+    url = providers.resolve_endpoint("XAI_BASE_URL", XAI_RESPONSES_URL)
     # A single non-DNS attempt: the per-call timeout already spans the model's
     # full live-search latency, and the inherited http default (retries=5)
     # would turn one 90-180s call into a 10-15 minute stall. The shared chain
     # deadline bounds the wait wall-clock; failover to the next X backend
     # covers the miss.
     return http.post(
-        XAI_RESPONSES_URL, payload, headers=headers, timeout=timeout,
+        url, payload, headers=headers, timeout=timeout,
         retries=1, deadline_monotonic=deadline_monotonic,
         cancel=cancel,
     )
