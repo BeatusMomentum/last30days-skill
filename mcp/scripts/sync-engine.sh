@@ -3,7 +3,7 @@
 # mcp/internal/engine/vendored/
 # so the Go binary's embed.FS captures the engine at build time.
 #
-# Source of truth: skills/last30days/scripts/. Never edit the mirror directly.
+# Source of truth: skills/last30days/scripts/. Never edit mcp/internal/engine/vendored/ directly.
 # Run before `go build` locally and in CI before `printing-press bundle`.
 
 set -euo pipefail
@@ -25,8 +25,12 @@ mkdir -p "${VENDORED}"
 # Clear stale content while keeping the .gitkeep that anchors the embed path.
 find "${VENDORED}" -mindepth 1 -not -name ".gitkeep" -delete
 
-# Copy the entry script, persistence module, and lib/ tree (modules + lib/vendor/).
-cp "${ENGINE_SRC}/last30days.py" "${ENGINE_SRC}/store.py" "${VENDORED}/"
+# Copy the entry script, the top-level modules it imports at runtime, and the
+# lib/ tree (modules + lib/vendor/). sync_contract_test.go fails if the engine
+# imports a top-level module missing from this list.
+for module in last30days.py store.py; do
+  cp "${ENGINE_SRC}/${module}" "${VENDORED}/${module}"
+done
 cp -R "${ENGINE_SRC}/lib" "${VENDORED}/lib"
 
 # Strip caches so the embed.FS stays deterministic.
