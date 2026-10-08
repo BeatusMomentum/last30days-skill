@@ -808,6 +808,91 @@ class TestPipelineWiring:
         assert "x" not in report.errors_by_source
         assert report.source_status["x"].state == health.OK
 
+    @staticmethod
+    def _many_topic_rows(count: int) -> list[dict]:
+        # Distinct wording per row so near-duplicate collapsing keeps them all.
+        onsets = ("br", "k", "pl", "st", "gr", "v", "dr", "sh")
+        vowels = ("a", "e", "i", "o", "u", "ai", "oo")
+        codas = ("n", "x", "lt", "mp", "rd", "sk", "th", "z")
+
+        def word(n: int) -> str:
+            return onsets[n % 8] + vowels[(n // 8) % 7] + codas[(n // 56) % 8]
+
+        return [
+            _row(
+                i, f"user{i}",
+                f"ai agents {word(i * 3)} {word(i * 3 + 1)} {word(i * 3 + 2)}",
+                likes=count - i,
+            )
+            for i in range(count)
+        ]
+
+    @pytest.mark.parametrize(("depth", "expected"), [("quick", 12), ("default", 24), ("deep", 40)])
+    def test_topic_lane_carries_two_x_streams_worth_of_rows(self, tmp_path, depth, expected):
+        rows = self._many_topic_rows(57)
+        envelope = _read(_write(tmp_path, _envelope([
+            _call("topic", posts=rows[:30]), _call("topic", posts=rows[30:]),
+        ])))
+        report = _run(envelope, depth=depth)
+        assert len(report.items_by_source["x"]) == expected
+
+    def test_small_envelope_keeps_every_topic_row(self, tmp_path):
+        envelope = _read(_write(tmp_path, _envelope([_call("topic", posts=self._many_topic_rows(9))])))
+        report = _run(envelope)
+        assert len(report.items_by_source["x"]) == 9
+
+    def test_capped_topic_rows_keep_the_most_engaged_posts(self, tmp_path):
+        rows = self._many_topic_rows(57)
+        envelope = _read(_write(tmp_path, _envelope([_call("topic", posts=list(reversed(rows)))])))
+        report = _run(envelope)
+        kept = {item.engagement.get("likes") for item in report.items_by_source["x"]}
+        assert max(row["likes"] for row in rows) in kept
+        assert min(row["likes"] for row in rows) not in kept
+
+    def test_backend_x_stream_keeps_the_per_stream_limit(self):
+        items = [
+            {"id": f"X{i}", "text": f"ai agents note {i}", "url": f"https://x.com/u{i}/status/{1900000000000000000 + i}",
+             "author_handle": f"u{i}", "date": TO, "engagement": {"likes": i}}
+            for i in range(30)
+        ]
+        with mock.patch("lib.env.x_backend_chain", return_value=["bird"]), \
+             mock.patch("lib.pipeline._fetch_x_backend", return_value=(items, {})):
+            report = pipeline.run(
+                topic=TOPIC, config={}, depth="default", requested_sources=["x"], mock=False,
+                external_plan=_plan(), web_backend="none", save_dir="",
+            )
+        assert len(report.items_by_source["x"]) <= 12
+
+    def test_set_backend_on_grok_bot_yields_to_envelope_and_runs_without_one(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LAST30DAYS_HOST", "grok-bot")
+        config = {"LAST30DAYS_HOST": "grok-bot", "LAST30DAYS_X_BACKEND": "xapi", "X_BEARER_TOKEN": "dummy"}
+        envelope = _read(_basic(tmp_path))
+        served = _run(envelope, config=config, x_handle=SUBJECT)
+        assert served.artifacts.get("x_provenance") in {"connector", "native"}
+        assert len(served.items_by_source["x"]) == 3
+        backend_item = {
+            "id": "X1", "text": "ai agents from the set backend",
+            "url": "https://x.com/someone/status/1900000000000000001", "author_handle": "someone",
+            "date": TO, "engagement": {"likes": 5},
+        }
+        with mock.patch("lib.pipeline._fetch_x_backend", return_value=([backend_item], {})) as fetch:
+            report = pipeline.run(
+                topic=TOPIC, config=dict(config), depth="default", requested_sources=["x"], mock=False,
+                external_plan=_plan(), web_backend="none", save_dir="",
+            )
+        assert fetch.called
+        assert "x_provenance" not in report.artifacts
+
+    def test_discovered_author_lanes_passed_as_related_keep_their_lanes(self, tmp_path):
+        envelope = _read(_write(tmp_path, _envelope([
+            _call("topic", posts=[_row(0, "alice", "ai agents review")]),
+            _call("from", handles=[RELATED], posts=[_row(1, RELATED, "ai agents in my stack")]),
+            _call("mention", handles=[RELATED], posts=[_row(2, "carol", f"@{RELATED} ai agents question")]),
+        ])), handles=(), related=(RELATED,))
+        assert envelope.lane_counts["from"] == 1
+        assert envelope.lane_counts["mention"] == 1
+        assert envelope.counters["lane-mismatch"] == 0
+
     def test_available_sources_lists_x_for_envelope_without_backend(self):
         with mock.patch("lib.env.x_backend_chain", return_value=[]), \
              mock.patch("lib.env.x_pending_browser_auth", return_value=False):
@@ -914,6 +999,30 @@ class TestPipelineWiring:
         md = render.render_compact(report)
         assert "via X connector" in md
         assert "3 items" in md
+
+    def test_footer_provenance_reads_via_grok_bot_x_for_native_envelopes(self, tmp_path):
+        envelope = _read(_basic(tmp_path, provider="x-native"))
+        report = _run(envelope, x_handle=SUBJECT)
+        md = render.render_compact(report)
+        assert "via Grok Bot X" in md
+        assert "via X connector" not in md
+
+    @pytest.mark.parametrize("provider", ["", "X-Native; rm -rf ~", "grok", "x-native-ish"])
+    def test_unknown_provider_falls_back_to_connector_label(self, tmp_path, provider):
+        envelope = _read(_basic(tmp_path, provider=provider))
+        report = _run(envelope, x_handle=SUBJECT)
+        md = render.render_compact(report)
+        assert "via X connector" in md
+        if provider:
+            assert provider not in md
+
+    def test_native_partial_outcome_names_grok_bot_x(self, tmp_path):
+        envelope = _read(_basic(tmp_path, provider="x-native", status="partial", error="window-unsupported"))
+        state, detail = envelope.outcome()
+        assert state == schema.PARTIAL
+        assert detail.startswith("Grok Bot X returned partial results")
+        connector = _read(_basic(tmp_path, status="partial", error="window-unsupported"))
+        assert connector.outcome()[1].startswith("X connector returned partial results")
 
     def test_env_file_lane_line_without_process_env_leaves_x_absent(self, tmp_path, monkeypatch):
         monkeypatch.delenv("LAST30DAYS_X_HOST_LANE", raising=False)
