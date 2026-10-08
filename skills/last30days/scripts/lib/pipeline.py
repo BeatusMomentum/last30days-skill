@@ -679,7 +679,7 @@ def _fetch_discovery_source(
             if _research_stopped(config) or time.monotonic() >= chain_deadline:
                 last_error = f"{last_error}; X chain budget exhausted (timed out or cancelled)".strip("; ")
                 break
-            items, error = _fetch_x_backend(
+            items, error, _ = _attempt_x_backend(
                 backend, query, from_date, to_date, depth, config,
                 warnings=x_warnings, deadline=chain_deadline,
             )
@@ -2793,14 +2793,18 @@ def run(
                     )
             if isinstance(artifact, dict) and artifact.get("_source_outcome_detail"):
                 artifact = dict(artifact)
+                detail_rate_limited = _detail_rate_limits_source(source, artifact)
                 lane_state = artifact.pop("_source_outcome_detail_state", None)
+                detail_note = artifact.pop("_source_outcome_detail")
                 bundle.record_detail(
-                    source, artifact.pop("_source_outcome_detail"), state=lane_state
+                    source, detail_note, state=lane_state
                 )
-                if lane_state == health.RATE_LIMITED:
+                if detail_rate_limited:
                     # Do not re-fan-out against a host still inside its window.
                     with rate_limit_lock:
                         rate_limited_sources.add(source)
+            if isinstance(artifact, dict):
+                artifact.pop("_x_backup_not_rate_limited", None)
             normalized = _normalize_score_dedupe(
                 source, raw_items, from_date, to_date,
                 freshness_mode=plan.freshness_mode,
@@ -4916,6 +4920,33 @@ def _fetch_x_backend(backend, query, from_date, to_date, depth, config, warnings
     return items, (err or "")
 
 
+def _attempt_x_backend(backend, query, from_date, to_date, depth, config, warnings=None, deadline=None):
+    try:
+        items, error = _fetch_x_backend(
+            backend, query, from_date, to_date, depth, config,
+            warnings=warnings, deadline=deadline,
+        )
+    except http.HTTPError as exc:
+        detail = str(exc)
+        cause = (
+            f"HTTP {exc.status_code}"
+            if exc.status_code is not None
+            else {
+                health.AUTH_FAILED: "authentication failed",
+                health.PAYMENT_REQUIRED: "payment required",
+                health.RATE_LIMITED: "rate limited",
+                health.TIMEOUT: "timed out",
+                health.UNREACHABLE: "connection error",
+                health.SCHEMA_DRIFT: "invalid JSON",
+            }.get(exc.outcome_state)
+        )
+        if cause and cause.lower() not in detail.lower():
+            detail = f"{cause}: {detail}"
+        return [], detail, exc.outcome_state
+    detail = str(error or "")
+    return items, detail, http.classify_failure(message=detail) if detail else None
+
+
 def _reddit_post_key(item: dict) -> str:
     """Stable per-thread dedupe key (base36 post id from the url/permalink)."""
     url = item.get("url") or item.get("permalink") or ""
@@ -4937,6 +4968,12 @@ def _merge_reddit_items(free: list[dict], sc: list[dict]) -> list[dict]:
             seen.add(key)
             merged.append(it)
     return merged
+
+
+def _detail_rate_limits_source(source: str, artifact: dict) -> bool:
+    if artifact.get("_source_outcome_detail_state") != health.RATE_LIMITED:
+        return False
+    return source != "x" or not bool(artifact.get("_x_backup_not_rate_limited"))
 
 
 def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
@@ -4974,7 +5011,8 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
         if matched:
             replay_artifact = replayed[1] or {}
             publish_rate_limit((replay_artifact.get("_source_outcome") or {}).get("state"))
-            publish_rate_limit(replay_artifact.get("_source_outcome_detail_state"))
+            if _detail_rate_limits_source(source, replay_artifact):
+                publish_rate_limit(health.RATE_LIMITED)
             return replayed[0], replayed[1]
     try:
         with http.capture_failures() as failures, \
@@ -5035,7 +5073,8 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
                 states, key=lambda state: _FAILURE_SPECIFICITY.get(state, 9)
             )
     publish_rate_limit((artifact.get("_source_outcome") or {}).get("state"))
-    publish_rate_limit(artifact.get("_source_outcome_detail_state"))
+    if _detail_rate_limits_source(source, artifact):
+        publish_rate_limit(health.RATE_LIMITED)
     if module_backed:
         http.fixture_source_record(fixture_request, [items, artifact])
     return items, artifact
@@ -5393,7 +5432,8 @@ def _retrieve_stream_impl(
                 schema.SKIPPED_UNCONFIGURED,
             )
         last_error = ""
-        chain_errors: list[str] = []
+        chain_errors: list[tuple[str, schema.RunOutcomeState]] = []
+        last_state = health.ERROR
         items = []
         used_backend = None
         x_warnings: list[str] = []
@@ -5402,13 +5442,15 @@ def _retrieve_stream_impl(
             if _research_stopped(config) or time.monotonic() >= chain_deadline:
                 msg = "X chain budget exhausted (timed out or cancelled)"
                 last_error = f"{last_error}; {msg}".strip("; ") if last_error else msg
-                chain_errors.append(msg)
+                last_state = health.TIMEOUT
+                chain_errors.append((msg, last_state))
                 print("[X] chain budget exhausted; skipping remaining backends", file=sys.stderr)
                 break
-            items, err = _fetch_x_backend(
-                backend, x_query, from_date, to_date, depth, config, warnings=x_warnings,
-                deadline=chain_deadline,
-            )
+            with http.tee_failures() as backend_failures:
+                items, err, err_state = _attempt_x_backend(
+                    backend, x_query, from_date, to_date, depth, config, warnings=x_warnings,
+                    deadline=chain_deadline,
+                )
             if items:
                 if i > 0:
                     # xapi is metered: name the spend when it served as a backup.
@@ -5419,35 +5461,50 @@ def _retrieve_stream_impl(
                     )
                 # Check for auth errors before proceeding to judge-retry
                 if last_error:
-                    # Fallback succeeded after earlier backend failed. Classify
-                    # the original error: if it was AUTH_FAILED (grok revoked),
-                    # preserve that state so user gets re-login guidance.
-                    prior_state = http.classify_failure(message=last_error)
+                    # Preserve a prior auth failure even when the backup served
+                    # items. Session backends alone need re-login guidance.
+                    prior_state = last_state
+                    backup_rate_limited = err_state == health.RATE_LIMITED or any(
+                        failure.outcome_state == health.RATE_LIMITED for failure in backend_failures
+                    )
+                    detail = f"X served via {backend} after {last_error}"
+                    if err:
+                        detail += f"; {backend}: {err}"
+                    if backup_rate_limited and err_state != health.RATE_LIMITED:
+                        detail += f"; {backend} also rate-limited"
                     if prior_state == schema.AUTH_FAILED:
-                        # Keep AUTH_FAILED visible so host shows re-login hint
-                        return items, _outcome_artifact(
-                            schema.AUTH_FAILED,
-                            f"X served via {backend} after {last_error}; re-login needed for primary backend",
+                        repair = (
+                            "; re-login needed for primary backend"
+                            if last_error.startswith(("grok:", "bird:")) else ""
                         )
+                        artifact = _outcome_artifact(
+                            schema.AUTH_FAILED,
+                            f"{detail}{repair}",
+                        )
+                        if backup_rate_limited:
+                            artifact["_source_outcome_detail"] = f"{backend} also rate-limited"
+                            artifact["_source_outcome_detail_state"] = health.RATE_LIMITED
+                        return items, artifact
                     # Prior error was non-auth. Check if *current* backend also
                     # reported an error (e.g., grok returned items + revocation).
                     if err:
-                        current_state = http.classify_failure(message=err)
+                        current_state = err_state
                         if current_state == schema.AUTH_FAILED:
+                            repair = "; re-login needed" if backend in ("grok", "bird") else ""
                             return items, _outcome_artifact(
                                 schema.AUTH_FAILED,
-                                f"X served {len(items)} items via {backend} but also errored: {err}; re-login needed",
+                                f"X served {len(items)} items via {backend} but also errored: {err}{repair}",
                             )
-                    # Non-auth prior error, no current auth error → fallback OK
-                    return items, _outcome_artifact(
-                        health.OK,
-                        f"X served via {backend} after {last_error}",
-                    )
+                    return items, {
+                        "_source_outcome_detail": detail,
+                        "_source_outcome_detail_state": health.RATE_LIMITED if backup_rate_limited else prior_state,
+                        "_x_backup_not_rate_limited": not backup_rate_limited,
+                    }
                 if err:
                     # Mixed result: backend returned items BUT also hit an error
                     # (e.g., grok got some posts then auth was revoked mid-fanout).
                     # Surface the error so the user gets re-login guidance.
-                    state = http.classify_failure(message=err)
+                    state = err_state
                     return items, _outcome_artifact(
                         state,
                         f"X returned {len(items)} items but also errored: {err}",
@@ -5457,23 +5514,24 @@ def _retrieve_stream_impl(
                 break
             if err:
                 last_error = f"{backend}: {err}"
-                chain_errors.append(last_error)
+                last_state = err_state
+                chain_errors.append((last_error, last_state))
                 print(f"[X] backend '{backend}' failed ({err}); trying next", file=sys.stderr)
 
         if not items and last_error:
             # A credit-exhaustion failure earlier in the chain is the most
             # specific outcome (top up, not re-authenticate); a later
             # backend's generic failure must not mask it.
-            for candidate in chain_errors:
-                if http.classify_failure(message=candidate) == health.PAYMENT_REQUIRED:
-                    last_error = candidate
+            for candidate, candidate_state in chain_errors:
+                if candidate_state == health.PAYMENT_REQUIRED:
+                    last_error, last_state = candidate, candidate_state
                     break
             state = (
                 health.TIMEOUT
                 if _research_stopped(config) or time.monotonic() >= chain_deadline
                 else bird_x.classify_run_failure(last_error)
                 if last_error.startswith("bird:")
-                else http.classify_failure(message=last_error)
+                else last_state
             )
             raise SourceRunError(f"All X backends failed — {last_error}", state)
 
@@ -5502,7 +5560,7 @@ def _retrieve_stream_impl(
                     if _research_stopped(config) or time.monotonic() >= chain_deadline:
                         print("[X] chain budget exhausted; skipping judge retry", file=sys.stderr)
                     else:
-                        retry_items, retry_err = _fetch_x_backend(
+                        retry_items, retry_err, _ = _attempt_x_backend(
                             used_backend, retry_query, from_date, to_date, depth, config,
                             deadline=chain_deadline,
                         )
