@@ -1109,6 +1109,111 @@ class TestScTranscriptParsing(unittest.TestCase):
             youtube_yt._sc_fetch_transcript("vidJ", "key")
         self.assertTrue(any("credits low" in m.lower() for m in logs))
 
+    def test_requests_preferred_language(self):
+        """Without a language the endpoint can return an auto-dubbed track (#1169)."""
+        payload = {"transcript": "some transcript text", "credits_remaining": 9999}
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": ""}), \
+             mock.patch.object(youtube_yt.http, "get", return_value=payload) as get_mock:
+            youtube_yt._sc_fetch_transcript("vidL", "key")
+        self.assertEqual(get_mock.call_args.kwargs["params"]["language"], "en")
+
+    def test_language_follows_sub_langs_setting(self):
+        payload = {"transcript": "some transcript text", "credits_remaining": 9999}
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "es,en"}), \
+             mock.patch.object(youtube_yt.http, "get", return_value=payload) as get_mock:
+            youtube_yt._sc_fetch_transcript("vidM", "key")
+        self.assertEqual(get_mock.call_args.kwargs["params"]["language"], "es")
+
+    def test_tries_next_language_when_first_has_no_transcript(self):
+        responses = [{"transcript": None}, {"transcript": "texto en español"}]
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": ""}), \
+             mock.patch.object(youtube_yt.http, "get", side_effect=responses) as get_mock:
+            out = youtube_yt._sc_fetch_transcript("vidN", "key")
+        self.assertEqual(out, "texto en español")
+        self.assertEqual(
+            [c.kwargs["params"]["language"] for c in get_mock.call_args_list], ["en", "es"],
+        )
+
+    def test_default_fallback_reaches_third_language_with_one_deadline(self):
+        responses = [
+            {"transcript": None},
+            {"transcript": None},
+            {"transcript": "legendas em português"},
+        ]
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": ""}), \
+             mock.patch.object(youtube_yt.http, "get", side_effect=responses) as get_mock:
+            out = youtube_yt._sc_fetch_transcript("vidP", "key")
+        self.assertEqual(out, "legendas em português")
+        self.assertEqual(
+            [c.kwargs["params"]["language"] for c in get_mock.call_args_list],
+            ["en", "es", "pt"],
+        )
+        self.assertEqual(
+            len({c.kwargs["deadline_monotonic"] for c in get_mock.call_args_list}), 1,
+        )
+        self.assertTrue(all(c.kwargs["max_429_retries"] == 0 for c in get_mock.call_args_list))
+        self.assertTrue(all(c.kwargs["owned_get"] for c in get_mock.call_args_list))
+
+    def test_custom_language_list_deduplicates_and_stops_after_three_requests(self):
+        with mock.patch.dict(
+            os.environ, {"LAST30DAYS_YT_SUB_LANGS": "fr,fr,de,ja,en,es"},
+        ), mock.patch.object(
+            youtube_yt.http, "get", return_value={"transcript": None},
+        ) as get_mock:
+            out = youtube_yt._sc_fetch_transcript("vidQ", "key")
+        self.assertIsNone(out)
+        self.assertEqual(
+            [c.kwargs["params"]["language"] for c in get_mock.call_args_list],
+            ["fr", "de", "ja"],
+        )
+
+    def test_empty_caption_segments_do_not_stop_language_fallback(self):
+        responses = [
+            {"transcript": [{"text": None}, {"text": "  "}]},
+            {"transcript": [{"text": "texto en español"}]},
+        ]
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "en,es"}), \
+             mock.patch.object(youtube_yt.http, "get", side_effect=responses) as get_mock:
+            out = youtube_yt._sc_fetch_transcript("vidR", "key")
+        self.assertEqual(out, "texto en español")
+        self.assertEqual(get_mock.call_count, 2)
+
+    def test_404_tries_next_language(self):
+        responses = [
+            youtube_yt.http.HTTPError("HTTP 404", status_code=404),
+            {"transcript": "texto en español"},
+        ]
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "en,es"}), \
+             mock.patch.object(youtube_yt.http, "get", side_effect=responses) as get_mock:
+            out = youtube_yt._sc_fetch_transcript("vidS", "key")
+        self.assertEqual(out, "texto en español")
+        self.assertEqual(get_mock.call_count, 2)
+
+    def test_shared_deadline_stops_before_another_request(self):
+        clock = {"now": 100.0}
+
+        def first_request(*_args, **_kwargs):
+            clock["now"] = 131.0
+            return {"transcript": None}
+
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "en,es"}), \
+             mock.patch.object(youtube_yt.time, "monotonic", side_effect=lambda: clock["now"]), \
+             mock.patch.object(youtube_yt.http, "get", side_effect=first_request) as get_mock:
+            out = youtube_yt._sc_fetch_transcript("vidT", "key")
+        self.assertIsNone(out)
+        self.assertEqual(get_mock.call_count, 1)
+        self.assertEqual(get_mock.call_args.kwargs["deadline_monotonic"], 130.0)
+
+    def test_stops_on_non_404_error(self):
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": ""}), \
+             mock.patch.object(
+                 youtube_yt.http, "get",
+                 side_effect=youtube_yt.http.HTTPError("HTTP 429", status_code=429),
+             ) as get_mock:
+            out = youtube_yt._sc_fetch_transcript("vidO", "key")
+        self.assertIsNone(out)
+        self.assertEqual(get_mock.call_count, 1)
+
     def test_healthy_credits_no_warning(self):
         payload = {"transcript": "some transcript text", "credits_remaining": 9999}
         logs = []
